@@ -13,12 +13,14 @@ import com.mjs.delong.service.DishService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @RestController
@@ -31,6 +33,8 @@ public class DishController {
     private DishFlavorService dishFlavorService;
     @Autowired
     private CategoryService categoryService;
+    @Autowired
+    private RedisTemplate redisTemplate;
 
 
     /**
@@ -44,6 +48,9 @@ public class DishController {
         log.info(dishDto.toString());
 
         dishService.saveDishWithFlavor(dishDto);
+        //清理某个分类下的菜品缓冲数据
+        String key = "dish_" + dishDto.getCategoryId() + "_1";
+        redisTemplate.delete(key);
         return R.success("新增菜品成功");
     }
 
@@ -106,6 +113,9 @@ public class DishController {
     public R<String> update(@RequestBody DishDto dishDto){
         log.info(dishDto.toString());
         dishService.updateDishWithFlavor(dishDto);
+        //这里删除所有的菜品信息, 因为修改时可能会修改分类.
+        String key = "dish_*";
+        redisTemplate.delete(key);
         return R.success("修改成功");
     }
 
@@ -118,6 +128,15 @@ public class DishController {
     public R<List<DishDto>> list(Dish dish){
 
         List<DishDto> dishDtoList = null;
+
+        //动态构造key
+        String key = "dish_" + dish.getCategoryId() + "_" + dish.getStatus();
+        //先从redis中获取缓存数据
+        dishDtoList = (List<DishDto>)redisTemplate.opsForValue().get(key);
+        if (dishDtoList != null){
+            //如果存在 , 直接返回 , 无需查证
+            return R.success(dishDtoList);
+        }
 
         //构造查询条件
         LambdaQueryWrapper<Dish> queryWrapper = new LambdaQueryWrapper<>();
@@ -147,6 +166,9 @@ public class DishController {
             dishDto.setFlavors(dishFlavorList1);
             dishDtoList.add(dishDto);
         }
+
+        //如果不存在 , 需要查询数据库, 将查询到的菜品数据缓存到redis中
+        redisTemplate.opsForValue().set(key,dishDtoList,60, TimeUnit.MINUTES);
 
         return R.success(dishDtoList);
 
